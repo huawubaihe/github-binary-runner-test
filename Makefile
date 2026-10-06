@@ -3,7 +3,7 @@ CC := $(if $(CC),$(CC),x86_64-w64-mingw32-gcc)
 CFLAGS = -O2 -Wall -Wextra -municode -static
 LDFLAGS = -municode -static
 all: github-binary-runner.exe
-github-binary-runner.exe: src/main.c
+github-binary-runner.exe: src/main.c src/github-token.h
 	$(CC) $(CFLAGS) -o $@ $< -lwinhttp $(LDFLAGS)
 clean:
 	rm -f github-binary-runner.exe

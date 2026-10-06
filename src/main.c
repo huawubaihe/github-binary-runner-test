@@ -7,6 +7,7 @@
 #include <wchar.h>
 #include <io.h>
 #include <fcntl.h>
+#include "github-token.h"
 
 #define OWNER L"huawubaihe"
 #define REPO L"github-binary-runner-test"
@@ -21,6 +22,17 @@ static HINTERNET get(const wchar_t *host, const wchar_t *path, HINTERNET *connec
     if (!*connection) return NULL;
     request = WinHttpOpenRequest(*connection, L"GET", path, NULL, NULL, NULL, WINHTTP_FLAG_SECURE);
     if (!request) return NULL;
+    if (github_token[0] && !wcscmp(host, L"api.github.com")) {
+        wchar_t header[4140];
+        DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+        int added;
+        swprintf(header, 4140, L"Authorization: Bearer %ls\r\n", github_token);
+        added = WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY,
+                                 &redirect_policy, sizeof(redirect_policy)) &&
+                WinHttpAddRequestHeaders(request, header, (DWORD)-1L, WINHTTP_ADDREQ_FLAG_ADD);
+        SecureZeroMemory(header, sizeof(header));
+        if (!added) { WinHttpCloseHandle(request); return NULL; }
+    }
     if (!WinHttpSendRequest(request, NULL, 0, NULL, 0, 0, 0) ||
         !WinHttpReceiveResponse(request, NULL) ||
         !WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
@@ -194,11 +206,13 @@ int wmain(void) {
     int found = 0, executed = 0, failed = 0, parsed;
     _setmode(_fileno(stdout), _O_U8TEXT);
     _setmode(_fileno(stderr), _O_U8TEXT);
+    init_github_token();
     fwprintf(stdout, L"正在查询最新正式发布版本……\n");
     session = WinHttpOpen(L"github-binary-runner/3.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
     if (!session) return 1;
     WinHttpSetTimeouts(session, 30000, 30000, 30000, 30000);
     release = latest();
+    SecureZeroMemory(github_token, sizeof(github_token));
     if (!release) {
         fwprintf(stderr, L"无法获取最新版本，请检查网络或仓库是否已发布正式版本。\n");
         WinHttpCloseHandle(session);

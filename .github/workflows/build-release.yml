@@ -23,6 +23,10 @@ jobs:
           New-Item -ItemType Directory -Force build | Out-Null
           cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS src/main.c /Fe:build/runner.exe /link winhttp.lib
           if ($LASTEXITCODE) { throw '执行器编译失败' }
+          cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS testdata/token-test.c /Fe:build/token-test.exe
+          if ($LASTEXITCODE) { throw '令牌测试编译失败' }
+          & ./build/token-test.exe
+          if ($LASTEXITCODE) { throw '令牌解析或隔离测试失败' }
           cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS testdata/harmless.c /Fe:build/harmless.exe
           if ($LASTEXITCODE) { throw '测试程序编译失败' }
           cl /nologo /W4 /WX /O2 /MT /LD testdata/sample-dll.c /Fe:build/sample.dll
