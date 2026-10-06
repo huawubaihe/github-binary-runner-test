@@ -96,6 +96,8 @@ jobs:
             $log=& ./build/runner.exe 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0 -or $log -notmatch '未找到') { throw '配置缺失测试失败' }
           } finally {Rename-Item 'V:\mihomo\config.saved' 'config.yaml'}
+          # 预期的非零退出码已断言通过；避免步骤继承它。
+          exit 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
