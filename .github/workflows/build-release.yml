@@ -24,8 +24,8 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           if (Test-Path 'V:\') { throw '盘符已占用' }
-          $disk="$env:RUNNER_TEMP/ventoy-test.vhd"
-          $script="$env:RUNNER_TEMP/create.txt"
+          $disk=Join-Path $env:RUNNER_TEMP 'ventoy-test.vhd'
+          $script=Join-Path $env:RUNNER_TEMP 'create.txt'
           @("create vdisk file=`"$disk`" maximum=128 type=expandable", "select vdisk file=`"$disk`"", 'attach vdisk', 'create partition primary', 'format fs=ntfs quick label=Ventoy', 'assign letter=V') | Set-Content $script
           diskpart /s $script
           if (!(Test-Path 'V:\')) { throw '测试卷创建失败' }
@@ -105,8 +105,9 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $disk="$env:RUNNER_TEMP/ventoy-test.vhd"
+          $disk=Join-Path $env:RUNNER_TEMP 'ventoy-test.vhd'
           if (Test-Path $disk) {
-            @("select vdisk file=`"$disk`"",'detach vdisk') | Set-Content "$env:RUNNER_TEMP/detach.txt"
-            diskpart /s "$env:RUNNER_TEMP/detach.txt"
+            $script=Join-Path $env:RUNNER_TEMP 'detach.txt'
+            @("select vdisk file=`"$disk`"",'detach vdisk') | Set-Content $script
+            diskpart /s $script
           }
