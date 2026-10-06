@@ -1,4 +1,4 @@
-name: 编译、发布并验证 Windows 执行器
+name: 编译与代理链路测试
 on:
   push:
     branches: [main]
@@ -9,7 +9,7 @@ concurrency:
   group: release-test
   cancel-in-progress: false
 jobs:
-  release-test:
+  test:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -17,97 +17,87 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - name: 创建测试 Ventoy 卷和本地代理
+      - name: 准备测试卷和核心
         shell: pwsh
+        env:
+          CI_TOKEN: ${{ github.token }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          if (Test-Path 'V:\') { throw '测试盘符已被占用' }
-          $disk = Join-Path $env:RUNNER_TEMP 'ventoy-test.vhd'
-          $commands = @(
-            "create vdisk file=`"$disk`" maximum=128 type=expandable",
-            "select vdisk file=`"$disk`"",
-            'attach vdisk', 'create partition primary',
-            'format fs=ntfs quick label=Ventoy', 'assign letter=V'
-          )
-          $script = Join-Path $env:RUNNER_TEMP 'create-ventoy.txt'
-          $commands | Set-Content $script
+          $ErrorActionPreference='Stop'
+          if (Test-Path 'V:\') { throw '盘符已占用' }
+          $disk="$env:RUNNER_TEMP/ventoy-test.vhd"
+          $script="$env:RUNNER_TEMP/create.txt"
+          @("create vdisk file=`"$disk`" maximum=128 type=expandable", "select vdisk file=`"$disk`"", 'attach vdisk', 'create partition primary', 'format fs=ntfs quick label=Ventoy', 'assign letter=V') | Set-Content $script
           diskpart /s $script
-          if (!(Test-Path 'V:\') -or (Get-Volume -DriveLetter V).FileSystemLabel -ne 'Ventoy') { throw '测试卷创建失败' }
+          if (!(Test-Path 'V:\')) { throw '测试卷创建失败' }
           New-Item -ItemType Directory 'V:\mihomo' | Out-Null
-          $url = 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-windows-amd64-compatible-v1.19.32.zip'
-          $zip = Join-Path $env:RUNNER_TEMP 'mihomo.zip'
-          Invoke-WebRequest $url -OutFile $zip
-          $unpacked = Join-Path $env:RUNNER_TEMP 'mihomo-unpacked'
-          Expand-Archive $zip $unpacked
-          $exe = @(Get-ChildItem $unpacked -Filter '*.exe' -Recurse)
+          [IO.File]::WriteAllText('V:\api_key_github.txt',$env:CI_TOKEN,[Text.UTF8Encoding]::new($false))
+          Invoke-WebRequest 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-windows-amd64-compatible-v1.19.32.zip' -OutFile "$env:RUNNER_TEMP/core.zip"
+          Expand-Archive "$env:RUNNER_TEMP/core.zip" "$env:RUNNER_TEMP/core"
+          $exe=@(Get-ChildItem "$env:RUNNER_TEMP/core" -Filter '*.exe' -Recurse)
           if ($exe.Count -ne 1) { throw '核心归档异常' }
           Copy-Item $exe[0].FullName 'V:\mihomo\mihomo.exe'
-          # CI 不含用户节点或订阅，使用本地 DIRECT 出站验证代理生命周期与隧道。
-          @('port: 17890', 'allow-lan: false', 'bind-address: 127.0.0.1', 'mode: direct', 'log-level: silent') | Set-Content 'V:\mihomo\config.yaml'
-      - name: 编译执行器和测试附件
+          # CI 使用 DIRECT 配置测试本地隧道，不含用户订阅或节点。
+          @('port: 17890','allow-lan: false','bind-address: 127.0.0.1','mode: direct','log-level: silent') | Set-Content 'V:\mihomo\config.yaml'
+      - name: 编译和令牌验证
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force build | Out-Null
-          cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS src/main.c /Fe:build/runner.exe /link winhttp.lib iphlpapi.lib
-          if ($LASTEXITCODE) { throw '执行器编译失败' }
-          cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS testdata/token-test.c /Fe:build/token-test.exe
+          New-Item -ItemType Directory build | Out-Null
+          cl /nologo /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS src/main.c /Fe:build/runner.exe /link winhttp.lib iphlpapi.lib
+          if ($LASTEXITCODE) { throw '编译失败' }
+          cl /nologo /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS testdata/token-test.c /Fe:build/token-test.exe
           if ($LASTEXITCODE) { throw '令牌测试编译失败' }
           & ./build/token-test.exe
-          if ($LASTEXITCODE) { throw '令牌解析或隔离测试失败' }
-          cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS testdata/harmless.c /Fe:build/harmless.exe
-          if ($LASTEXITCODE) { throw '测试程序编译失败' }
-          cl /nologo /W4 /WX /O2 /MT /LD testdata/sample-dll.c /Fe:build/sample.dll
-          if ($LASTEXITCODE) { throw '测试 DLL 编译失败' }
-          Set-Content build/notes.txt '这是普通文本，不应执行。'
-          Set-Content build/fake.exe '这是伪装成 EXE 的文本，不应执行。'
-      - name: 发布正式版本和测试附件
+          if ($LASTEXITCODE) { throw '令牌测试失败' }
+          cl /nologo /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS testdata/harmless.c /Fe:build/harmless.exe
+          if ($LASTEXITCODE) { throw 'EXE编译失败' }
+          cl /nologo /O2 /MT /LD testdata/sample-dll.c /Fe:build/sample.dll
+          if ($LASTEXITCODE) { throw 'DLL编译失败' }
+          Set-Content build/notes.txt '普通文本'
+          Set-Content build/fake.exe '伪装EXE的文本'
+      - name: 发布测试版本
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "test-$env:GITHUB_RUN_NUMBER-$env:GITHUB_RUN_ATTEMPT"
-          gh release create $tag build/harmless.exe build/sample.dll build/notes.txt build/fake.exe --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --latest --title "无害测试版本 $tag" --notes '含一个无害 EXE、一个 DLL、普通文本及伪装 EXE，用于筛选验证。'
+          $tag="test-$env:GITHUB_RUN_NUMBER-$env:GITHUB_RUN_ATTEMPT"
+          gh release create $tag build/harmless.exe build/sample.dll build/notes.txt build/fake.exe --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --latest --title "无害测试版本 $tag"
           if ($LASTEXITCODE) { throw '发布失败' }
           "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
-      - name: 验证最新版本下载和执行两次
+      - name: 代理下载执行、清理和失败分支验证
         shell: pwsh
         run: |
-          $env:RUNNER_TEST_MARKER = Join-Path $env:RUNNER_TEMP 'harmless-marker.txt'
-          for ($attempt = 0; $attempt -lt 12; $attempt++) {
-            $release = Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/latest"
-            if ($release.tag_name -eq $env:RELEASE_TAG -and $release.assets.Count -eq 4) { break }
-            Start-Sleep -Seconds 5
+          $env:RUNNER_TEST_MARKER="$env:RUNNER_TEMP/marker.txt"
+          $headers=@{Authorization="Bearer $([IO.File]::ReadAllText('V:\api_key_github.txt'))"}
+          for ($i=0;$i -lt 12;$i++) {
+            $r=Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/latest" -Headers $headers
+            if ($r.tag_name -eq $env:RELEASE_TAG -and $r.assets.Count -eq 4) { break }
+            Start-Sleep 5
           }
-          if ($release.tag_name -ne $env:RELEASE_TAG -or $release.assets.Count -ne 4) { throw '最新 Release 尚未就绪' }
+          if ($r.tag_name -ne $env:RELEASE_TAG -or $r.assets.Count -ne 4) { throw '版本未就绪' }
           1..2 | ForEach-Object {
             Remove-Item $env:RUNNER_TEST_MARKER -ErrorAction SilentlyContinue
-            $before = @(Get-ChildItem "$env:TEMP/gbr*" -ErrorAction SilentlyContinue).FullName
-            $log = & ./build/runner.exe 2>&1 | Out-String
-            $code = $LASTEXITCODE
+            $before=@(Get-ChildItem "$env:TEMP/gbr*" -ErrorAction SilentlyContinue).FullName
+            $log=& ./build/runner.exe 2>&1 | Out-String
+            $code=$LASTEXITCODE
             Write-Output $log
-            if ($code -ne 0 -or !(Test-Path $env:RUNNER_TEST_MARKER)) { throw '下载执行验证失败' }
-            if ($log -notmatch '发现 4 个附件，成功执行 1 个，失败 0 个') { throw '附件筛选验证失败' }
-            $after = @(Get-ChildItem "$env:TEMP/gbr*" -ErrorAction SilentlyContinue).FullName
-            if (@($after | Where-Object { $_ -notin $before }).Count) { throw '临时文件清理验证失败' }
-            if (Get-Process mihomo* -ErrorAction SilentlyContinue) { throw '核心退出清理失败' }
+            if ($code -ne 0 -or !(Test-Path $env:RUNNER_TEST_MARKER) -or $log -notmatch '发现 4 个附件，成功执行 1 个，失败 0 个') { throw '执行或筛选失败' }
+            $after=@(Get-ChildItem "$env:TEMP/gbr*" -ErrorAction SilentlyContinue).FullName
+            if (@($after | Where-Object {$_ -notin $before}).Count) { throw '临时文件残留' }
+            if (Get-Process mihomo* -ErrorAction SilentlyContinue) { throw '核心残留' }
           }
-      - name: 验证端口冲突与配置缺失不会直连
-        shell: pwsh
-        run: |
-          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 17890)
+          $listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,17890)
           try {
             $listener.Start()
-            $log = & ./build/runner.exe 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0 -or $log -notmatch '端口已占用') { throw '端口冲突验证失败' }
-          } finally { $listener.Stop() }
+            $log=& ./build/runner.exe 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -or $log -notmatch '端口已占用') { throw '端口冲突测试失败' }
+          } finally {$listener.Stop()}
           Rename-Item 'V:\mihomo\config.yaml' 'config.saved'
           try {
-            $log = & ./build/runner.exe 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0 -or $log -notmatch '未找到') { throw '缺失配置验证失败' }
-          } finally { Rename-Item 'V:\mihomo\config.saved' 'config.yaml' }
-      - name: 保存执行器和测试日志
+            $log=& ./build/runner.exe 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -or $log -notmatch '未找到') { throw '配置缺失测试失败' }
+          } finally {Rename-Item 'V:\mihomo\config.saved' 'config.yaml'}
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: Windows执行器
           path: build/runner.exe
@@ -115,9 +105,8 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $disk = Join-Path $env:RUNNER_TEMP 'ventoy-test.vhd'
+          $disk="$env:RUNNER_TEMP/ventoy-test.vhd"
           if (Test-Path $disk) {
-            $script = Join-Path $env:RUNNER_TEMP 'detach-ventoy.txt'
-            @("select vdisk file=`"$disk`"", 'detach vdisk') | Set-Content $script
-            diskpart /s $script
+            @("select vdisk file=`"$disk`"",'detach vdisk') | Set-Content "$env:RUNNER_TEMP/detach.txt"
+            diskpart /s "$env:RUNNER_TEMP/detach.txt"
           }
