@@ -1,0 +1,67 @@
+name: 编译、发布并验证 Windows 执行器
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release-test
+  cancel-in-progress: false
+jobs:
+  release-test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: 编译执行器和测试附件
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS src/main.c /Fe:build/runner.exe /link winhttp.lib
+          if ($LASTEXITCODE) { throw '执行器编译失败' }
+          cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS testdata/harmless.c /Fe:build/harmless.exe
+          if ($LASTEXITCODE) { throw '测试程序编译失败' }
+          cl /nologo /W4 /WX /O2 /MT /LD testdata/sample-dll.c /Fe:build/sample.dll
+          if ($LASTEXITCODE) { throw '测试 DLL 编译失败' }
+          Set-Content build/notes.txt '这是普通文本，不应执行。'
+          Set-Content build/fake.exe '这是伪装成 EXE 的文本，不应执行。'
+      - name: 发布正式版本和测试附件
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "test-$env:GITHUB_RUN_NUMBER-$env:GITHUB_RUN_ATTEMPT"
+          gh release create $tag build/harmless.exe build/sample.dll build/notes.txt build/fake.exe --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --latest --title "无害测试版本 $tag" --notes '含一个无害 EXE、一个 DLL、普通文本及伪装 EXE，用于筛选验证。'
+          if ($LASTEXITCODE) { throw '发布失败' }
+          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+      - name: 验证最新版本下载和执行两次
+        shell: pwsh
+        run: |
+          $env:RUNNER_TEST_MARKER = Join-Path $env:RUNNER_TEMP 'harmless-marker.txt'
+          for ($attempt = 0; $attempt -lt 12; $attempt++) {
+            $release = Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/latest"
+            if ($release.tag_name -eq $env:RELEASE_TAG -and $release.assets.Count -eq 4) { break }
+            Start-Sleep -Seconds 5
+          }
+          if ($release.tag_name -ne $env:RELEASE_TAG -or $release.assets.Count -ne 4) { throw '最新 Release 尚未就绪' }
+          1..2 | ForEach-Object {
+            Remove-Item $env:RUNNER_TEST_MARKER -ErrorAction SilentlyContinue
+            $before = @(Get-ChildItem "$env:TEMP/gbr*" -ErrorAction SilentlyContinue).FullName
+            $log = & ./build/runner.exe 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            Write-Output $log
+            if ($code -ne 0 -or !(Test-Path $env:RUNNER_TEST_MARKER)) { throw '下载执行验证失败' }
+            if ($log -notmatch '发现 4 个附件，成功执行 1 个，失败 0 个') { throw '附件筛选验证失败' }
+            $after = @(Get-ChildItem "$env:TEMP/gbr*" -ErrorAction SilentlyContinue).FullName
+            if (@($after | Where-Object { $_ -notin $before }).Count) { throw '临时文件清理验证失败' }
+          }
+      - name: 保存执行器和测试日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows执行器
+          path: build/runner.exe
