@@ -8,6 +8,7 @@
 #include <io.h>
 #include <fcntl.h>
 #include "github-token.h"
+#include "mihomo-proxy.h"
 
 #define OWNER L"huawubaihe"
 #define REPO L"github-binary-runner-test"
@@ -37,6 +38,7 @@ static HINTERNET get(const wchar_t *host, const wchar_t *path, HINTERNET *connec
         !WinHttpReceiveResponse(request, NULL) ||
         !WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                              NULL, &status, &length, NULL)) {
+        fwprintf(stderr, L"代理网络请求失败，系统错误码：%lu。\n", GetLastError());
         WinHttpCloseHandle(request);
         return NULL;
     }
@@ -206,10 +208,16 @@ int wmain(void) {
     int found = 0, executed = 0, failed = 0, parsed;
     _setmode(_fileno(stdout), _O_U8TEXT);
     _setmode(_fileno(stderr), _O_U8TEXT);
+    atexit(stop_proxy);
     init_github_token();
+    if (!start_proxy()) {
+        SecureZeroMemory(github_token, sizeof(github_token));
+        return 1;
+    }
     fwprintf(stdout, L"正在查询最新正式发布版本……\n");
-    session = WinHttpOpen(L"github-binary-runner/3.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);
-    if (!session) return 1;
+    session = WinHttpOpen(L"github-binary-runner/4.0", WINHTTP_ACCESS_TYPE_NAMED_PROXY,
+                          MIHOMO_ADDRESS, L"<local>", 0);
+    if (!session) { SecureZeroMemory(github_token, sizeof(github_token)); return 1; }
     WinHttpSetTimeouts(session, 30000, 30000, 30000, 30000);
     release = latest();
     SecureZeroMemory(github_token, sizeof(github_token));

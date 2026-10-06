@@ -4,3 +4,5 @@
 *.lib
 *.exp
 build/
+api_key_github.txt
+mihomo/config.yaml

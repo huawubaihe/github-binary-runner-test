@@ -17,11 +17,38 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - name: 创建测试 Ventoy 卷和本地代理
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path 'V:\') { throw '测试盘符已被占用' }
+          $disk = Join-Path $env:RUNNER_TEMP 'ventoy-test.vhd'
+          $commands = @(
+            "create vdisk file=`"$disk`" maximum=128 type=expandable",
+            "select vdisk file=`"$disk`"",
+            'attach vdisk', 'create partition primary',
+            'format fs=ntfs quick label=Ventoy', 'assign letter=V'
+          )
+          $script = Join-Path $env:RUNNER_TEMP 'create-ventoy.txt'
+          $commands | Set-Content $script
+          diskpart /s $script
+          if (!(Test-Path 'V:\') -or (Get-Volume -DriveLetter V).FileSystemLabel -ne 'Ventoy') { throw '测试卷创建失败' }
+          New-Item -ItemType Directory 'V:\mihomo' | Out-Null
+          $url = 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-windows-amd64-compatible-v1.19.32.zip'
+          $zip = Join-Path $env:RUNNER_TEMP 'mihomo.zip'
+          Invoke-WebRequest $url -OutFile $zip
+          $unpacked = Join-Path $env:RUNNER_TEMP 'mihomo-unpacked'
+          Expand-Archive $zip $unpacked
+          $exe = @(Get-ChildItem $unpacked -Filter '*.exe' -Recurse)
+          if ($exe.Count -ne 1) { throw '核心归档异常' }
+          Copy-Item $exe[0].FullName 'V:\mihomo\mihomo.exe'
+          # CI 不含用户节点或订阅，使用本地 DIRECT 出站验证代理生命周期与隧道。
+          @('port: 17890', 'allow-lan: false', 'bind-address: 127.0.0.1', 'mode: direct', 'log-level: silent') | Set-Content 'V:\mihomo\config.yaml'
       - name: 编译执行器和测试附件
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build | Out-Null
-          cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS src/main.c /Fe:build/runner.exe /link winhttp.lib
+          cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS src/main.c /Fe:build/runner.exe /link winhttp.lib iphlpapi.lib
           if ($LASTEXITCODE) { throw '执行器编译失败' }
           cl /nologo /W3 /O2 /MT /utf-8 /D_CRT_SECURE_NO_WARNINGS testdata/token-test.c /Fe:build/token-test.exe
           if ($LASTEXITCODE) { throw '令牌测试编译失败' }
@@ -62,10 +89,35 @@ jobs:
             if ($log -notmatch '发现 4 个附件，成功执行 1 个，失败 0 个') { throw '附件筛选验证失败' }
             $after = @(Get-ChildItem "$env:TEMP/gbr*" -ErrorAction SilentlyContinue).FullName
             if (@($after | Where-Object { $_ -notin $before }).Count) { throw '临时文件清理验证失败' }
+            if (Get-Process mihomo* -ErrorAction SilentlyContinue) { throw '核心退出清理失败' }
           }
+      - name: 验证端口冲突与配置缺失不会直连
+        shell: pwsh
+        run: |
+          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 17890)
+          try {
+            $listener.Start()
+            $log = & ./build/runner.exe 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -or $log -notmatch '端口已占用') { throw '端口冲突验证失败' }
+          } finally { $listener.Stop() }
+          Rename-Item 'V:\mihomo\config.yaml' 'config.saved'
+          try {
+            $log = & ./build/runner.exe 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -or $log -notmatch '未找到') { throw '缺失配置验证失败' }
+          } finally { Rename-Item 'V:\mihomo\config.saved' 'config.yaml' }
       - name: 保存执行器和测试日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Windows执行器
           path: build/runner.exe
+      - name: 清理测试卷
+        if: always()
+        shell: pwsh
+        run: |
+          $disk = Join-Path $env:RUNNER_TEMP 'ventoy-test.vhd'
+          if (Test-Path $disk) {
+            $script = Join-Path $env:RUNNER_TEMP 'detach-ventoy.txt'
+            @("select vdisk file=`"$disk`"", 'detach vdisk') | Set-Content $script
+            diskpart /s $script
+          }

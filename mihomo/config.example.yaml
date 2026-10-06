@@ -1,0 +1,30 @@
+# 示例没有节点凭据；在 U 盘填入自己的美国S01节点。
+port: 17890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: silent
+ipv6: false
+external-controller: ""
+profile:
+  store-selected: false
+  store-fake-ip: false
+dns:
+  enable: true
+  ipv6: false
+  default-nameserver: [223.5.5.5, 119.29.29.29]
+  nameserver: [https://dns.alidns.com/dns-query]
+  proxy-server-nameserver: [https://dns.alidns.com/dns-query]
+proxies:
+  - name: 美国S01
+    type: ss
+    server: YOUR_NODE_SERVER
+    port: 12345
+    cipher: aes-256-gcm
+    password: YOUR_NODE_PASSWORD
+proxy-groups:
+  - name: 美国固定节点
+    type: select
+    proxies: [美国S01]
+rules:
+  - MATCH,美国固定节点
